@@ -92,7 +92,7 @@ final class CassandraSpanConsumer implements GuavaSpanConsumer {
     for (Span span : rawSpans) {
       // indexing occurs by timestamp, so derive one if not present.
       Long timestamp = guessTimestamp(span);
-      BigInteger traceId = CassandraUtil.extractTraceId(span);
+      BigInteger traceId = CassandraUtil.bigInteger(span.traceIdHigh, span.traceId);
       futures.add(storeSpan(span, traceId, timestamp));
 
       for (String serviceName : span.serviceNames()) {

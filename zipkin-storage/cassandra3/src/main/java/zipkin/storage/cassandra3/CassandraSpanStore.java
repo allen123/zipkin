@@ -65,6 +65,7 @@ import static com.google.common.util.concurrent.Futures.immediateFailedFuture;
 import static com.google.common.util.concurrent.Futures.immediateFuture;
 import static com.google.common.util.concurrent.Futures.transform;
 import static zipkin.internal.Util.getDays;
+import static zipkin.storage.cassandra3.CassandraUtil.bigInteger;
 import static zipkin.storage.cassandra3.Schema.TABLE_TRACES;
 import static zipkin.storage.cassandra3.Schema.TABLE_TRACE_BY_SERVICE_SPAN;
 
@@ -80,6 +81,13 @@ final class CassandraSpanStore implements GuavaSpanStore {
       return right.get(0).compareTo(left.get(0));
     }
   });
+  static final Function<Collection<List<Span>>, List<Span>> FIRST_OR_NULL =
+      new Function<Collection<List<Span>>, List<Span>>() {
+        @Override public List<Span> apply(Collection<List<Span>> input) {
+          if (input.isEmpty()) return null;
+          return input.iterator().next();
+        }
+      };
 
   private final int maxTraceCols;
   private final int indexFetchMultiplier;
@@ -233,36 +241,46 @@ final class CassandraSpanStore implements GuavaSpanStore {
     });
   }
 
+
   enum AdjustTraces implements Function<Collection<List<Span>>, List<List<Span>>> {
     INSTANCE;
 
     @Override public List<List<Span>> apply(Collection<List<Span>> unmerged) {
       List<List<Span>> result = new ArrayList<>(unmerged.size());
       for (List<Span> spans : unmerged) {
-        result.add(CorrectForClockSkew.apply(MergeById.apply(spans)));
+        result.add(AdjustTrace.INSTANCE.apply(spans));
       }
       return TRACE_DESCENDING.immutableSortedCopy(result);
     }
   }
 
+  enum AdjustTrace implements Function<List<Span>, List<Span>> {
+    INSTANCE;
+
+    @Override public List<Span> apply(List<Span> input) {
+      if (input == null) return null;
+      return CorrectForClockSkew.apply(MergeById.apply(input));
+    }
+  }
+
   @Override public ListenableFuture<List<Span>> getRawTrace(long traceId) {
     return transform(
-        getSpansByTraceIds(Collections.singleton(BigInteger.valueOf(traceId)), maxTraceCols),
-        new Function<Collection<List<Span>>, List<Span>>() {
-          @Override public List<Span> apply(Collection<List<Span>> encodedTraces) {
-            if (encodedTraces.isEmpty()) return null;
-            return encodedTraces.iterator().next();
-          }
-        });
+        getSpansByTraceIds(Collections.singleton(bigInteger(0, traceId)), maxTraceCols),
+        FIRST_OR_NULL);
+  }
+
+  @Override public ListenableFuture<List<Span>> getRawTrace(long traceIdHigh, long traceId) {
+    return transform(
+        getSpansByTraceIds(Collections.singleton(bigInteger(traceIdHigh, traceId)), maxTraceCols),
+        FIRST_OR_NULL);
   }
 
   @Override public ListenableFuture<List<Span>> getTrace(long traceId) {
-    return transform(getRawTrace(traceId), new Function<List<Span>, List<Span>>() {
-      @Override public List<Span> apply(List<Span> input) {
-        if (input == null || input.isEmpty()) return null;
-        return ImmutableList.copyOf(CorrectForClockSkew.apply(MergeById.apply(input)));
-      }
-    });
+    return transform(getRawTrace(traceId), AdjustTrace.INSTANCE);
+  }
+
+  @Override public ListenableFuture<List<Span>> getTrace(long traceIdHigh, long traceId) {
+    return transform(getRawTrace(traceIdHigh, traceId), AdjustTrace.INSTANCE);
   }
 
   @Override public ListenableFuture<List<String>> getServiceNames() {

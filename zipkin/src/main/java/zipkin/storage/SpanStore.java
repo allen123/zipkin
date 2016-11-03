@@ -40,6 +40,12 @@ public interface SpanStore {
   List<Span> getTrace(long id);
 
   /**
+   * Like {@link #getTrace(long)}, except matches exactly on 128-bit trace id.
+   */
+  @Nullable
+  List<Span> getTrace(long traceIdHigh, long traceId);
+
+  /**
    * Retrieves spans that share a trace id, as returned from backend data store queries, with no
    * ordering expectation.
    *
@@ -51,6 +57,12 @@ public interface SpanStore {
    */
   @Nullable
   List<Span> getRawTrace(long traceId);
+
+  /**
+   * Like {@link #getRawTrace(long)}, except matches exactly on 128-bit trace id.
+   */
+  @Nullable
+  List<Span> getRawTrace(long traceIdHigh, long traceId);
 
   /**
    * Get all the {@link Endpoint#serviceName service names}.

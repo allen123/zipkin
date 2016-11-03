@@ -39,8 +39,19 @@ final class InternalGuavaToAsyncSpanStoreAdapter implements AsyncSpanStore {
     addCallback(delegate.getTrace(id), new InternalForwardingCallback<>(callback));
   }
 
+  @Override public void getTrace(long traceIdHigh, long traceId, Callback<List<Span>> callback) {
+    addCallback(delegate.getTrace(traceIdHigh, traceId),
+        new InternalForwardingCallback<>(callback));
+  }
+
   @Override public void getRawTrace(long traceId, Callback<List<Span>> callback) {
     addCallback(delegate.getRawTrace(traceId), new InternalForwardingCallback<>(callback));
+  }
+
+  @Override
+  public void getRawTrace(long traceIdHigh, long traceId, Callback<List<Span>> callback) {
+    addCallback(delegate.getRawTrace(traceIdHigh, traceId),
+        new InternalForwardingCallback<>(callback));
   }
 
   @Override public void getServiceNames(Callback<List<String>> callback) {

@@ -108,4 +108,10 @@ public class CassandraSpanStoreTest extends SpanStoreTest {
   public void getTraces_duration() {
     throw new AssumptionViolatedException("Upgrade to cassandra3 if you want duration queries");
   }
+
+  @Test
+  @Override
+  public void getTraces_groupByTraceIdHigh_binaryAnnotation() {
+    throw new AssumptionViolatedException("Upgrade to cassandra3 if you want duration queries");
+  }
 }

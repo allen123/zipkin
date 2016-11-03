@@ -16,12 +16,9 @@ package zipkin.storage;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Calendar;
 import java.util.Collections;
-import java.util.GregorianCalendar;
 import java.util.List;
 import java.util.SortedSet;
-import java.util.TimeZone;
 import java.util.TreeSet;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -33,6 +30,7 @@ import zipkin.Endpoint;
 import zipkin.Span;
 import zipkin.TestObjects;
 import zipkin.internal.CallbackCaptor;
+import zipkin.internal.Util;
 
 import static java.util.Arrays.asList;
 import static java.util.Collections.emptyList;
@@ -73,18 +71,8 @@ public abstract class SpanStoreTest {
   public abstract void clear() throws IOException;
 
   /** Notably, the cassandra implementation has day granularity */
-  static long midnight(){
-    Calendar date = new GregorianCalendar(TimeZone.getTimeZone("GMT"));
-    // reset hour, minutes, seconds and millis
-    date.set(Calendar.HOUR_OF_DAY, 0);
-    date.set(Calendar.MINUTE, 0);
-    date.set(Calendar.SECOND, 0);
-    date.set(Calendar.MILLISECOND, 0);
-    return date.getTimeInMillis();
-  }
-
   // Use real time, as most span-stores have TTL logic which looks back several days.
-  long today = midnight();
+  long today = Util.midnightUTC(System.currentTimeMillis());
 
   Endpoint ep = Endpoint.create("service", 127 << 24 | 1);
 
@@ -154,6 +142,20 @@ public abstract class SpanStoreTest {
   public void getTrace() {
     accept(span1, span2);
     assertThat(store().getTrace(span1.traceId)).isEqualTo(asList(span1));
+  }
+
+  @Test
+  public void getTrace_128() {
+    span1 = span1.toBuilder().traceIdHigh(1L).build();
+    span2 = span1.toBuilder().traceIdHigh(2L).build();
+
+    accept(span1, span2);
+
+    assertThat(store().getTrace(span1.traceIdHigh, span1.traceId))
+        .isEqualTo(asList(span1));
+
+    assertThat(store().getTrace(span2.traceIdHigh, span2.traceId))
+        .isEqualTo(asList(span2));
   }
 
   @Test
@@ -269,6 +271,17 @@ public abstract class SpanStoreTest {
     assertThat(store().getTraces(q.spanName("badmethod").build())).isEmpty();
     assertThat(store().getTraces(q.serviceName("badservice").build())).isEmpty();
     assertThat(store().getTraces(q.spanName(null).build())).isEmpty();
+  }
+
+  @Test
+  public void getTraces_spanName_128() {
+    span1 = span1.toBuilder().traceIdHigh(1L).name("foo").build();
+    span2 = span1.toBuilder().traceIdHigh(2L).name("bar").build();
+    accept(span1, span2);
+
+    QueryRequest.Builder q = QueryRequest.builder().serviceName("service");
+    assertThat(store().getTraces(q.spanName(span1.name).build()))
+        .containsExactly(asList(span1));
   }
 
   @Test
@@ -401,6 +414,22 @@ public abstract class SpanStoreTest {
     assertThat(
         store().getTraces(QueryRequest.builder().serviceName("service").addBinaryAnnotation("BAH", "BEH").build()))
         .containsExactly(asList(span1));
+  }
+
+  @Test
+  public void getTraces_groupByTraceIdHigh_binaryAnnotation() {
+    span1 = span1.toBuilder().traceIdHigh(1L)
+        .binaryAnnotations(asList(BinaryAnnotation.create("key", "value1", ep))).build();
+    span2 = span1.toBuilder().traceIdHigh(2L)
+        .binaryAnnotations(asList(BinaryAnnotation.create("key", "value2", ep))).build();
+
+    accept(span1, span2);
+
+    assertThat(
+        store().getTraces(QueryRequest.builder().serviceName("service")
+            .addBinaryAnnotation("key", "value2")
+            .groupByTraceIdHigh(true).build()))
+        .containsExactly(asList(span2));
   }
 
   @Test

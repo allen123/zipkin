@@ -23,6 +23,7 @@ import zipkin.Codec;
 import zipkin.DependencyLink;
 import zipkin.Span;
 import zipkin.internal.Nullable;
+import zipkin.internal.Util;
 import zipkin.storage.QueryRequest;
 import zipkin.storage.SpanStore;
 
@@ -49,23 +50,35 @@ final class HttpSpanStore implements SpanStore {
     maybeAddQueryParam(url, "endTs", request.endTs);
     maybeAddQueryParam(url, "lookback", request.lookback);
     maybeAddQueryParam(url, "limit", request.limit);
+    maybeAddQueryParam(url, "groupByTraceIdHigh", request.groupByTraceIdHigh);
     Response response = call(new Request.Builder().url(url.build()).build());
     return Codec.JSON.readTraces(responseBytes(response));
   }
 
   @Override
   public List<Span> getTrace(long traceId) {
-    return getTrace(traceId, false);
+    return getTrace(0, traceId, false);
+  }
+
+  @Override public List<Span> getTrace(long traceIdHigh, long traceId) {
+    return getTrace(traceIdHigh, traceId, false);
   }
 
   @Override
   public List<Span> getRawTrace(long traceId) {
-    return getTrace(traceId, true);
+    return getTrace(0, traceId, true);
   }
 
-  private List<Span> getTrace(long id, boolean raw) {
+  @Override public List<Span> getRawTrace(long traceIdHigh, long traceId) {
+    return getTrace(traceIdHigh, traceId, true);
+  }
+
+  private List<Span> getTrace(long traceIdHigh, long traceId, boolean raw) {
+    String traceIdHex = traceIdHigh != 0
+        ? Util.toLowerHex(traceIdHigh) + Util.toLowerHex(traceId)
+        : Util.toLowerHex(traceId);
     Response response = call(new Request.Builder()
-        .url(baseUrl.resolve(String.format("/api/v1/trace/%016x%s", id, raw ? "?raw" : "")))
+        .url(baseUrl.resolve(String.format("/api/v1/trace/%s%s", traceIdHex, raw ? "?raw" : "")))
         .build());
     if (response.code() == 404) {
       return null;

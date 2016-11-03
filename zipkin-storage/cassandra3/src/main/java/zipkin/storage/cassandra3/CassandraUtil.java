@@ -122,13 +122,12 @@ final class CassandraUtil {
     return new NamedBoundStatement(prepared, name);
   }
 
-  /** Extracts an up-to 128-bit number from {@link Span#traceIdHigh} and {@link Span#traceId} */
-  static BigInteger extractTraceId(Span span) {
-    if (span.traceIdHigh != 0) {
-      ByteBuffer bytes = ByteBuffer.allocate(16).putLong(span.traceIdHigh).putLong(span.traceId);
+  static BigInteger bigInteger(long traceIdHigh, long traceId) {
+    if (traceIdHigh != 0) {
+      ByteBuffer bytes = ByteBuffer.allocate(16).putLong(traceIdHigh).putLong(traceId);
       return new BigInteger(bytes.array());
     }
-    return BigInteger.valueOf(span.traceId);
+    return BigInteger.valueOf(traceId);
   }
 
   /** Sets a 64 bit trace id, or splits a 128-bit one into high and low bits */

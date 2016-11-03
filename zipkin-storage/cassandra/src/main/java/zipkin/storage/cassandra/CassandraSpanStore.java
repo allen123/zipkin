@@ -21,6 +21,7 @@ import com.datastax.driver.core.Row;
 import com.datastax.driver.core.Session;
 import com.datastax.driver.core.querybuilder.QueryBuilder;
 import com.google.common.base.Function;
+import com.google.common.base.Predicate;
 import com.google.common.collect.ContiguousSet;
 import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableList;
@@ -240,19 +241,24 @@ public final class CassandraSpanStore implements GuavaSpanStore {
     });
   }
 
-  static String spanName(String nullableSpanName) {
-    return nullableSpanName != null ? nullableSpanName : "";
-  }
-
   enum AdjustTraces implements Function<Collection<List<Span>>, List<List<Span>>> {
     INSTANCE;
 
     @Override public List<List<Span>> apply(Collection<List<Span>> unmerged) {
       List<List<Span>> result = new ArrayList<>(unmerged.size());
       for (List<Span> spans : unmerged) {
-        result.add(CorrectForClockSkew.apply(MergeById.apply(spans)));
+        result.add(AdjustTrace.INSTANCE.apply(spans));
       }
       return TRACE_DESCENDING.immutableSortedCopy(result);
+    }
+  }
+
+  enum AdjustTrace implements Function<List<Span>, List<Span>> {
+    INSTANCE;
+
+    @Override public List<Span> apply(List<Span> input) {
+      if (input == null) return null;
+      return CorrectForClockSkew.apply(MergeById.apply(input));
     }
   }
 
@@ -266,13 +272,26 @@ public final class CassandraSpanStore implements GuavaSpanStore {
         });
   }
 
+  @Override public ListenableFuture<List<Span>> getRawTrace(final long traceIdHigh, long traceId) {
+    return transform(getSpansByTraceIds(Collections.singleton(traceId), maxTraceCols),
+        new Function<Collection<List<Span>>, List<Span>>() {
+          @Override public List<Span> apply(Collection<List<Span>> input) {
+            if (input.isEmpty()) return null;
+            return FluentIterable.from(input.iterator().next()).filter(new Predicate<Span>() {
+              @Override public boolean apply(Span input) {
+                return input.traceIdHigh == traceIdHigh;
+              }
+            }).toList();
+          }
+        });
+  }
+
   @Override public ListenableFuture<List<Span>> getTrace(long traceId) {
-    return transform(getRawTrace(traceId), new Function<List<Span>, List<Span>>() {
-      @Override public List<Span> apply(List<Span> input) {
-        if (input == null || input.isEmpty()) return null;
-        return ImmutableList.copyOf(CorrectForClockSkew.apply(MergeById.apply(input)));
-      }
-    });
+    return transform(getRawTrace(traceId), AdjustTrace.INSTANCE);
+  }
+
+  @Override public ListenableFuture<List<Span>> getTrace(long traceIdHigh, long traceId) {
+    return transform(getRawTrace(traceIdHigh, traceId), AdjustTrace.INSTANCE);
   }
 
   @Override public ListenableFuture<List<String>> getServiceNames() {

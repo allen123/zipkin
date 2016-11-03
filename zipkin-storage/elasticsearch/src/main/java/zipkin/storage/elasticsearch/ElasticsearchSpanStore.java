@@ -162,8 +162,21 @@ final class ElasticsearchSpanStore implements GuavaSpanStore {
     });
   }
 
+  @Override public ListenableFuture<List<Span>> getTrace(long traceIdHigh, long traceId) {
+    return transform(getRawTrace(traceIdHigh, traceId), new Function<List<Span>, List<Span>>() {
+      @Override public List<Span> apply(List<Span> input) {
+        return input == null ? null : CorrectForClockSkew.apply(MergeById.apply(input));
+      }
+    });
+  }
+
   @Override public ListenableFuture<List<Span>> getRawTrace(long traceId) {
     return client.findSpans(catchAll, termQuery("traceId", Util.toLowerHex(traceId)));
+  }
+
+  @Override public ListenableFuture<List<Span>> getRawTrace(long traceIdHigh, long traceId) {
+    return client.findSpans(catchAll,
+        termQuery("traceId", Util.toLowerHex(traceIdHigh) + Util.toLowerHex(traceId)));
   }
 
   ListenableFuture<List<List<Span>>> getTracesByIds(Collection<String> traceIds, String[] indices) {

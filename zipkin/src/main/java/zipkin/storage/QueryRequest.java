@@ -92,6 +92,9 @@ public final class QueryRequest {
   /** Maximum number of traces to return. Defaults to 10 */
   public final int limit;
 
+  /** When true, results will be grouped on 128-bit trace IDs, not 64. Defaults to false. */
+  public final boolean groupByTraceIdHigh;
+
   /**
    * Corresponds to query parameter "annotationQuery". Ex. "http.method=GET and error"
    *
@@ -125,7 +128,8 @@ public final class QueryRequest {
       Long maxDuration,
       long endTs,
       long lookback,
-      int limit) {
+      int limit,
+      boolean groupByTraceIdHigh) {
     checkArgument(serviceName == null || !serviceName.isEmpty(), "serviceName was empty");
     checkArgument(spanName == null || !spanName.isEmpty(), "spanName was empty");
     checkArgument(endTs > 0, "endTs should be positive, in epoch microseconds: was %d", endTs);
@@ -160,6 +164,7 @@ public final class QueryRequest {
     this.endTs = endTs;
     this.lookback = lookback;
     this.limit = limit;
+    this.groupByTraceIdHigh = groupByTraceIdHigh;
   }
 
   public Builder toBuilder() {
@@ -180,6 +185,7 @@ public final class QueryRequest {
     private Long endTs;
     private Long lookback;
     private Integer limit;
+    private boolean groupByTraceIdHigh = false;
 
     Builder(){
     }
@@ -194,6 +200,7 @@ public final class QueryRequest {
       this.endTs = source.endTs;
       this.lookback = source.lookback;
       this.limit = source.limit;
+      this.groupByTraceIdHigh = source.groupByTraceIdHigh;
     }
 
     /** @see QueryRequest#serviceName */
@@ -274,6 +281,12 @@ public final class QueryRequest {
       return this;
     }
 
+    /** @see QueryRequest#groupByTraceIdHigh */
+    public Builder groupByTraceIdHigh(boolean groupByTraceIdHigh) {
+      this.groupByTraceIdHigh = groupByTraceIdHigh;
+      return this;
+    }
+
     public QueryRequest build() {
       long selectedEndTs = endTs == null ? System.currentTimeMillis() : endTs;
       return new QueryRequest(
@@ -285,7 +298,8 @@ public final class QueryRequest {
           maxDuration,
           selectedEndTs,
           Math.min(lookback == null ? selectedEndTs : lookback, selectedEndTs),
-          limit == null ? 10 : limit);
+          limit == null ? 10 : limit,
+          groupByTraceIdHigh);
     }
   }
 
@@ -300,7 +314,8 @@ public final class QueryRequest {
         + "maxDuration=" + maxDuration + ", "
         + "endTs=" + endTs + ", "
         + "lookback=" + lookback + ", "
-        + "limit=" + limit
+        + "limit=" + limit + ", "
+        + "groupByTraceIdHigh=" + groupByTraceIdHigh
         + "}";
   }
 

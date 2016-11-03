@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.LinkedList;
@@ -35,17 +36,16 @@ import zipkin.internal.DependencyLinker;
 import zipkin.internal.MergeById;
 import zipkin.internal.Nullable;
 import zipkin.internal.Pair;
-import zipkin.internal.Util;
 
 import static zipkin.internal.ApplyTimestampAndDuration.guessTimestamp;
 import static zipkin.internal.Util.UTF_8;
 import static zipkin.internal.Util.sortedList;
 
 public final class InMemorySpanStore implements SpanStore {
-  private final Multimap<Long, Span> traceIdToSpans = new LinkedListMultimap<Long, Span>();
-  private final Set<Pair<Long>> traceIdTimeStamps = new TreeSet<Pair<Long>>(VALUE_2_DESCENDING);
-  private final Multimap<String, Pair<Long>> serviceToTraceIdTimeStamp =
-      new SortedByValue2Descending<String>();
+  private final Multimap<Pair<Long>, Span> traceIdToSpans = new LinkedListMultimap<Pair<Long>, Span>();
+  private final Set<LongTriple> traceIdTimeStamps = new TreeSet<LongTriple>(VALUE_3_DESCENDING);
+  private final Multimap<String, LongTriple> serviceToTraceIdTimeStamp =
+      new SortedByValue3Descending<String>();
   private final Multimap<String, String> serviceToSpanNames = new LinkedHashSetMultimap<String, String>();
   volatile int acceptedSpanCount;
 
@@ -53,12 +53,15 @@ public final class InMemorySpanStore implements SpanStore {
     @Override public void accept(List<Span> spans) {
       for (Span span : spans) {
         Long timestamp = guessTimestamp(span);
-        Pair<Long> traceIdTimeStamp =
-            Pair.create(span.traceId, timestamp == null ? Long.MIN_VALUE : timestamp);
+        LongTriple traceIdTimeStamp = new LongTriple(span.traceIdHigh, span.traceId,
+                timestamp == null ? Long.MIN_VALUE : timestamp);
         String spanName = span.name;
         synchronized (InMemorySpanStore.this) {
           traceIdTimeStamps.add(traceIdTimeStamp);
-          traceIdToSpans.put(span.traceId, span);
+          traceIdToSpans.put(Pair.create(span.traceIdHigh, span.traceId), span);
+          if (span.traceIdHigh != 0) {
+            traceIdToSpans.put(Pair.create(0L, span.traceId), span);
+          }
           acceptedSpanCount++;
 
           for (String serviceName : span.serviceNames()) {
@@ -75,7 +78,12 @@ public final class InMemorySpanStore implements SpanStore {
   };
 
   public synchronized List<Long> traceIds() {
-    return Util.sortedList(traceIdToSpans.keySet());
+    Set<Pair<Long>> input = traceIdToSpans.keySet();
+    List<Long> result = new ArrayList<Long>(input.size());
+    for (Pair<Long> pair : input) {
+      result.add(pair._2);
+    }
+    return result;
   }
 
   synchronized void clear() {
@@ -86,30 +94,33 @@ public final class InMemorySpanStore implements SpanStore {
 
   @Override
   public synchronized List<List<Span>> getTraces(QueryRequest request) {
-    Set<Long> traceIds = traceIdsDescendingByTimestamp(request.serviceName);
+    Set<Pair<Long>> traceIds = traceIdsDescendingByTimestamp(request.serviceName);
     if (traceIds == null || traceIds.isEmpty()) return Collections.emptyList();
 
-    List<List<Span>> result = new ArrayList<List<Span>>(traceIds.size());
-    for (long traceId : traceIds) {
-      List<Span> next = getTrace(traceId);
+    Set<List<Span>> grouped = new LinkedHashSet<List<Span>>(traceIds.size());
+    for (Pair<Long> traceId : traceIds) {
+      List<Span> next = request.groupByTraceIdHigh
+          ? getTrace(traceId._1, traceId._2)
+          : getTrace(traceId._2);
       if (next != null && test(request, next)) {
-        result.add(next);
+        grouped.add(next);
       }
-      if (result.size() == request.limit) {
+      if (grouped.size() == request.limit) {
         break;
       }
     }
+    ArrayList<List<Span>> result = new ArrayList<List<Span>>(grouped);
     Collections.sort(result, TRACE_DESCENDING);
     return result;
   }
 
-  Set<Long> traceIdsDescendingByTimestamp(@Nullable String serviceName) {
-    Collection<Pair<Long>> traceIdTimestamps = serviceName == null ? traceIdTimeStamps :
+  Set<Pair<Long>> traceIdsDescendingByTimestamp(@Nullable String serviceName) {
+    Collection<LongTriple> traceIdTimestamps = serviceName == null ? traceIdTimeStamps :
         serviceToTraceIdTimeStamp.get(serviceName);
     if (traceIdTimestamps == null || traceIdTimestamps.isEmpty()) return Collections.emptySet();
-    Set<Long> result = new LinkedHashSet<Long>();
-    for (Pair<Long> traceIdTimestamp : traceIdTimestamps) {
-      result.add(traceIdTimestamp._1);
+    Set<Pair<Long>> result = new LinkedHashSet<Pair<Long>>();
+    for (LongTriple traceIdTimestamp : traceIdTimestamps) {
+      result.add(Pair.create(traceIdTimestamp._1, traceIdTimestamp._2));
     }
     return result;
   }
@@ -127,11 +138,28 @@ public final class InMemorySpanStore implements SpanStore {
     return spans == null ? null : CorrectForClockSkew.apply(MergeById.apply(spans));
   }
 
-  @Override
-  public synchronized List<Span> getRawTrace(long traceId) {
-    List<Span> spans = (List<Span>) traceIdToSpans.get(traceId);
+  @Override public List<Span> getTrace(long traceIdHigh, long traceId) {
+    List<Span> spans = getRawTrace(traceIdHigh, traceId);
+    return spans == null ? null : CorrectForClockSkew.apply(MergeById.apply(spans));
+  }
+
+  @Override public synchronized List<Span> getRawTrace(long traceId) {
+    List<Span> spans = (List<Span>) traceIdToSpans.get(Pair.create(0L, traceId));
     if (spans == null || spans.isEmpty()) return null;
     return spans;
+  }
+
+  @Override public List<Span> getRawTrace(long traceIdHigh, long traceId) {
+    List<Span> spans = (List<Span>) traceIdToSpans.get(Pair.create(traceIdHigh, traceId));
+    if (spans == null || spans.isEmpty()) return null;
+    List<Span> filtered = new ArrayList<Span>(spans);
+    Iterator<Span> iterator = filtered.iterator();
+    while (iterator.hasNext()) {
+      if (iterator.next().traceIdHigh != traceIdHigh) {
+        iterator.remove();
+      }
+    }
+    return filtered;
   }
 
   @Override
@@ -148,26 +176,18 @@ public final class InMemorySpanStore implements SpanStore {
 
   @Override
   public List<DependencyLink> getDependencies(long endTs, @Nullable Long lookback) {
-    endTs *= 1000;
-    if (lookback == null) {
-      lookback = endTs;
-    } else {
-      lookback *= 1000;
-    }
+    QueryRequest request = QueryRequest.builder()
+        .endTs(endTs)
+        .lookback(lookback)
+        .limit(Integer.MAX_VALUE).build();
 
     DependencyLinker linksBuilder = new DependencyLinker();
 
-    for (Collection<Span> trace : traceIdToSpans.delegate.values()) {
+    for (Collection<Span> trace : getTraces(request)) {
       if (trace.isEmpty()) continue;
 
       List<DependencyLinkSpan> linkSpans = new LinkedList<DependencyLinkSpan>();
       for (Span s : MergeById.apply(trace)) {
-        Long timestamp = s.timestamp;
-        if (timestamp == null ||
-            timestamp < (endTs - lookback) ||
-            timestamp > endTs) {
-          continue;
-        }
         linkSpans.add(DependencyLinkSpan.from(s));
       }
 
@@ -250,20 +270,27 @@ public final class InMemorySpanStore implements SpanStore {
     }
   }
 
-  static final Comparator<Pair<Long>> VALUE_2_DESCENDING = new Comparator<Pair<Long>>() {
+  static final Comparator<LongTriple> VALUE_3_DESCENDING = new Comparator<LongTriple>() {
     @Override
-    public int compare(Pair<Long> left, Pair<Long> right) {
-      int result = right._2.compareTo(left._2);
+    public int compare(LongTriple left, LongTriple right) {
+      int result = compare(right._3, left._3);
       if (result != 0) return result;
-      return right._1.compareTo(left._1);
+      result = compare(right._2, left._2);
+      if (result != 0) return result;
+      return compare(right._1, left._2);
+    }
+
+    /** Added to avoid dependency on later versions of Java */
+    int compare(long x, long y) {
+      return x < y ? -1 : x == y ? 0 : 1;
     }
   };
 
   /** QueryRequest.limit needs trace ids are returned in timestamp descending order. */
-  static final class SortedByValue2Descending<K> extends Multimap<K, Pair<Long>> {
+  static final class SortedByValue3Descending<K> extends Multimap<K, LongTriple> {
 
-    @Override Set<Pair<Long>> valueContainer() {
-      return new TreeSet<Pair<Long>>(VALUE_2_DESCENDING);
+    @Override Set<LongTriple> valueContainer() {
+      return new TreeSet<LongTriple>(VALUE_3_DESCENDING);
     }
   }
 
@@ -303,6 +330,45 @@ public final class InMemorySpanStore implements SpanStore {
 
     Collection<V> get(K key) {
       return delegate.get(key);
+    }
+  }
+
+  static final class LongTriple {
+    final long _1;
+    final long _2;
+    final long _3;
+
+    LongTriple(long _1, long _2, long _3) {
+      this._1 = _1;
+      this._2 = _2;
+      this._3 = _3;
+    }
+
+    @Override
+    public String toString() {
+      return "(" + _1 + ", " + _2  + ", " + _3 + ")";
+    }
+
+    @Override
+    public boolean equals(Object o) {
+      if (o == this) return true;
+      if (o instanceof LongTriple) {
+        LongTriple that = (LongTriple) o;
+        return this._1 == that._1 && this._2 == that._2 && this._3 == that._3;
+      }
+      return false;
+    }
+
+    @Override
+    public int hashCode() {
+      int h = 1;
+      h *= 1000003;
+      h ^= (_1 >>> 32) ^ _1;
+      h *= 1000003;
+      h ^= (_2 >>> 32) ^ _2;
+      h *= 1000003;
+      h ^= (_3 >>> 32) ^ _3;
+      return h;
     }
   }
 }

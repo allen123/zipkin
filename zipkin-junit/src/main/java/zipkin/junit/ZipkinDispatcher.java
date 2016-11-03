@@ -67,10 +67,23 @@ final class ZipkinDispatcher extends Dispatcher {
         QueryRequest queryRequest = toQueryRequest(url);
         return jsonResponse(Codec.JSON.writeTraces(store.getTraces(queryRequest)));
       } else if (url.encodedPath().startsWith("/api/v1/trace/")) {
-        String traceId = url.encodedPath().replace("/api/v1/trace/", "");
-        long id = lowerHexToUnsignedLong(traceId);
-        List<Span> trace = url.queryParameterNames().contains("raw")
-            ? store.getRawTrace(id) : store.getTrace(id);
+        String traceIdHex = url.encodedPath().replace("/api/v1/trace/", "");
+        Long traceIdHigh = traceIdHex.length() == 32 ? lowerHexToUnsignedLong(traceIdHex, 0) : null;
+        long traceId = lowerHexToUnsignedLong(traceIdHex);
+        final List<Span> trace;
+        if (url.queryParameterNames().contains("raw")) {
+          if (traceIdHigh != null) {
+            trace = store.getRawTrace(traceIdHigh, traceId);
+          } else {
+            trace = store.getRawTrace(traceId);
+          }
+        } else {
+          if (traceIdHigh != null) {
+            trace = store.getTrace(traceIdHigh, traceId);
+          } else {
+            trace = store.getTrace(traceId);
+          }
+        }
         if (trace != null) return jsonResponse(Codec.JSON.writeSpans(trace));
       }
     } else if (request.getMethod().equals("POST")) {
@@ -119,7 +132,8 @@ final class ZipkinDispatcher extends Dispatcher {
                                  .maxDuration(maybeLong(url.queryParameter("maxDuration")))
                                  .endTs(maybeLong(url.queryParameter("endTs")))
                                  .lookback(maybeLong(url.queryParameter("lookback")))
-                                 .limit(maybeInteger(url.queryParameter("limit"))).build();
+                                 .limit(maybeInteger(url.queryParameter("limit")))
+                                 .groupByTraceIdHigh(Boolean.valueOf(url.queryParameter("groupByTraceIdHigh"))).build();
   }
 
   static Long maybeLong(String input) {

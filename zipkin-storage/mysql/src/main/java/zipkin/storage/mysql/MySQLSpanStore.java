@@ -16,7 +16,7 @@ package zipkin.storage.mysql;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
 import java.util.Iterator;
@@ -30,10 +30,13 @@ import org.jooq.Cursor;
 import org.jooq.DSLContext;
 import org.jooq.Field;
 import org.jooq.Record;
-import org.jooq.Record1;
+import org.jooq.Record2;
+import org.jooq.Result;
+import org.jooq.Row2;
+import org.jooq.Row3;
 import org.jooq.SelectConditionStep;
+import org.jooq.SelectField;
 import org.jooq.SelectOffsetStep;
-import org.jooq.Table;
 import org.jooq.TableField;
 import org.jooq.TableOnConditionStep;
 import zipkin.Annotation;
@@ -48,13 +51,14 @@ import zipkin.internal.DependencyLinkSpan;
 import zipkin.internal.DependencyLinker;
 import zipkin.internal.Lazy;
 import zipkin.internal.Nullable;
-import zipkin.internal.Pair;
 import zipkin.storage.QueryRequest;
 import zipkin.storage.SpanStore;
 import zipkin.storage.mysql.internal.generated.tables.ZipkinAnnotations;
 
+import static java.util.Arrays.asList;
 import static java.util.Collections.emptyList;
 import static java.util.stream.Collectors.groupingBy;
+import static org.jooq.impl.DSL.row;
 import static zipkin.BinaryAnnotation.Type.STRING;
 import static zipkin.Constants.CLIENT_ADDR;
 import static zipkin.Constants.CLIENT_SEND;
@@ -69,14 +73,20 @@ import static zipkin.storage.mysql.internal.generated.tables.ZipkinSpans.ZIPKIN_
 final class MySQLSpanStore implements SpanStore {
   static final Field<?>[] SPAN_FIELDS_WITHOUT_TRACE_ID_HIGH =
       fieldsExcept(ZIPKIN_SPANS.fields(), ZIPKIN_SPANS.TRACE_ID_HIGH);
+  static final Field<?>[] ANNOTATION_FIELDS_WITHOUT_TRACE_ID_HIGH =
+      fieldsExcept(ZIPKIN_ANNOTATIONS.fields(), ZIPKIN_ANNOTATIONS.TRACE_ID_HIGH);
   static final Field<?>[] ANNOTATION_FIELDS_WITHOUT_IPV6 =
-      fieldsExcept(ZIPKIN_ANNOTATIONS.fields(), ZIPKIN_ANNOTATIONS.ENDPOINT_IPV6);
+      fieldsExcept(ANNOTATION_FIELDS_WITHOUT_TRACE_ID_HIGH, ZIPKIN_ANNOTATIONS.ENDPOINT_IPV6);
   static final Field<?>[] LINK_FIELDS = new Field<?>[] {
       ZIPKIN_SPANS.TRACE_ID_HIGH, ZIPKIN_SPANS.TRACE_ID, ZIPKIN_SPANS.PARENT_ID, ZIPKIN_SPANS.ID,
       ZIPKIN_ANNOTATIONS.A_KEY, ZIPKIN_ANNOTATIONS.ENDPOINT_SERVICE_NAME
   };
   static final Field<?>[] LINK_FIELDS_WITHOUT_TRACE_ID_HIGH =
       fieldsExcept(LINK_FIELDS, ZIPKIN_SPANS.TRACE_ID_HIGH);
+  static final Row2<Long, Long> SPAN_TRACE_ID_FIELDS =
+      row(ZIPKIN_SPANS.TRACE_ID_HIGH, ZIPKIN_SPANS.TRACE_ID);
+  static final Row2<Long, Long> ANNOTATION_TRACE_ID_FIELDS =
+      row(ZIPKIN_ANNOTATIONS.TRACE_ID_HIGH, ZIPKIN_ANNOTATIONS.TRACE_ID);
 
   private final DataSource datasource;
   private final DSLContexts context;
@@ -103,36 +113,47 @@ final class MySQLSpanStore implements SpanStore {
         .ipv6(hasIpv6.get() ? a.getValue(ZIPKIN_ANNOTATIONS.ENDPOINT_IPV6) : null).build();
   }
 
-  private static SelectOffsetStep<Record1<Long>> toTraceIdQuery(DSLContext context,
-      QueryRequest request) {
+  SelectOffsetStep<? extends Record> toTraceIdQuery(DSLContext context, QueryRequest request) {
     long endTs = (request.endTs > 0 && request.endTs != Long.MAX_VALUE) ? request.endTs * 1000
         : System.currentTimeMillis() * 1000;
 
-    Table<?> table = ZIPKIN_SPANS.join(ZIPKIN_ANNOTATIONS)
-        .on(ZIPKIN_SPANS.TRACE_ID.eq(ZIPKIN_ANNOTATIONS.TRACE_ID).and(
-            ZIPKIN_SPANS.ID.eq(ZIPKIN_ANNOTATIONS.SPAN_ID)));
+    Condition identifiers = (hasTraceIdHigh.get() ?
+        SPAN_TRACE_ID_FIELDS.eq(ANNOTATION_TRACE_ID_FIELDS)
+        : ZIPKIN_SPANS.TRACE_ID.eq(ZIPKIN_ANNOTATIONS.TRACE_ID))
+        .and(ZIPKIN_SPANS.ID.eq(ZIPKIN_ANNOTATIONS.SPAN_ID));
+
+    TableOnConditionStep<?> table = ZIPKIN_SPANS.join(ZIPKIN_ANNOTATIONS).on(identifiers);
 
     int i = 0;
     for (String key : request.annotations) {
       ZipkinAnnotations aTable = ZIPKIN_ANNOTATIONS.as("a" + i++);
+      Condition aIdentifiers = (hasTraceIdHigh.get() ?
+          SPAN_TRACE_ID_FIELDS.eq(row(aTable.TRACE_ID_HIGH, aTable.TRACE_ID))
+          : ZIPKIN_SPANS.TRACE_ID.eq(aTable.TRACE_ID))
+          .and(ZIPKIN_SPANS.ID.eq(aTable.SPAN_ID));
       table = maybeOnService(table.join(aTable)
-          .on(ZIPKIN_SPANS.TRACE_ID.eq(aTable.TRACE_ID))
-          .and(ZIPKIN_SPANS.ID.eq(aTable.SPAN_ID))
+          .on(aIdentifiers)
           .and(aTable.A_TYPE.eq(-1))
           .and(aTable.A_KEY.eq(key)), aTable, request.serviceName);
     }
 
     for (Map.Entry<String, String> kv : request.binaryAnnotations.entrySet()) {
       ZipkinAnnotations aTable = ZIPKIN_ANNOTATIONS.as("a" + i++);
+      Condition aIdentifiers = (hasTraceIdHigh.get() ?
+          SPAN_TRACE_ID_FIELDS.eq(row(aTable.TRACE_ID_HIGH, aTable.TRACE_ID))
+          : ZIPKIN_SPANS.TRACE_ID.eq(aTable.TRACE_ID))
+          .and(ZIPKIN_SPANS.ID.eq(aTable.SPAN_ID));
       table = maybeOnService(table.join(aTable)
-          .on(ZIPKIN_SPANS.TRACE_ID.eq(aTable.TRACE_ID))
-          .and(ZIPKIN_SPANS.ID.eq(aTable.SPAN_ID))
+          .on(aIdentifiers)
           .and(aTable.A_TYPE.eq(STRING.value))
           .and(aTable.A_KEY.eq(kv.getKey()))
           .and(aTable.A_VALUE.eq(kv.getValue().getBytes(UTF_8))), aTable, request.serviceName);
     }
+    List<SelectField<?>> traceIdFields = hasTraceIdHigh.get()
+        ? asList(ZIPKIN_SPANS.TRACE_ID_HIGH, ZIPKIN_SPANS.TRACE_ID)
+        : asList(ZIPKIN_SPANS.TRACE_ID);
 
-    SelectConditionStep<Record1<Long>> dsl = context.selectDistinct(ZIPKIN_SPANS.TRACE_ID)
+    SelectConditionStep<Record> dsl = context.selectDistinct(traceIdFields)
         .from(table)
         .where(ZIPKIN_SPANS.START_TS.between(endTs - request.lookback * 1000, endTs));
 
@@ -152,21 +173,32 @@ final class MySQLSpanStore implements SpanStore {
     return dsl.orderBy(ZIPKIN_SPANS.START_TS.desc()).limit(request.limit);
   }
 
-  static Table<?> maybeOnService(TableOnConditionStep<Record> table,
+  static TableOnConditionStep<?> maybeOnService(TableOnConditionStep<Record> table,
       ZipkinAnnotations aTable, String serviceName) {
     if (serviceName == null) return table;
     return table.and(aTable.ENDPOINT_SERVICE_NAME.eq(serviceName));
   }
 
-  List<List<Span>> getTraces(@Nullable QueryRequest request, @Nullable Long traceId, boolean raw) {
-    final Map<Long, List<Span>> spansWithoutAnnotations;
-    final Map<Pair<?>, List<Record>> dbAnnotations;
+  List<List<Span>> getTraces(@Nullable QueryRequest request, @Nullable Long traceIdHigh,
+      @Nullable Long traceId, boolean raw) {
+    final Map<Row2<Long, Long>, List<Span>> spansWithoutAnnotations;
+    final Map<Row3<Long, Long, Long>, List<Record>> dbAnnotations;
+    boolean shouldGroupBy128Bit = hasTraceIdHigh.get() &&
+        (traceIdHigh != null || (request != null && request.groupByTraceIdHigh));
     try (Connection conn = datasource.getConnection()) {
-      Condition traceIdCondition;
+      final Condition traceIdCondition;
       if (request != null) {
-        List<Long> traceIds =
-            toTraceIdQuery(context.get(conn), request).fetch(ZIPKIN_SPANS.TRACE_ID);
-        traceIdCondition = ZIPKIN_SPANS.TRACE_ID.in(traceIds);
+        if (hasTraceIdHigh.get()) {
+          traceIdCondition = SPAN_TRACE_ID_FIELDS
+              .in((Result<? extends Record2<Long, Long>>) toTraceIdQuery(context.get(conn), request)
+                  .fetch());
+        } else {
+          List<Long> traceIds =
+              toTraceIdQuery(context.get(conn), request).fetch(ZIPKIN_SPANS.TRACE_ID);
+          traceIdCondition = ZIPKIN_SPANS.TRACE_ID.in(traceIds);
+        }
+      } else if (traceIdHigh != null && hasTraceIdHigh.get()) {
+        traceIdCondition = SPAN_TRACE_ID_FIELDS.eq(traceIdHigh, traceId);
       } else {
         traceIdCondition = ZIPKIN_SPANS.TRACE_ID.eq(traceId);
       }
@@ -185,15 +217,20 @@ final class MySQLSpanStore implements SpanStore {
               .debug(r.getValue(ZIPKIN_SPANS.DEBUG))
               .build())
           .collect(
-              groupingBy((Span s) -> s.traceId, LinkedHashMap::new, Collectors.<Span>toList()));
+              groupingBy((Span s) -> row(shouldGroupBy128Bit ? s.traceIdHigh: 0L, s.traceId), LinkedHashMap::new, Collectors.<Span>toList()));
 
       dbAnnotations = context.get(conn)
-          .select(hasIpv6.get() ? ZIPKIN_ANNOTATIONS.fields() : ANNOTATION_FIELDS_WITHOUT_IPV6)
+          .select(hasTraceIdHigh.get() ? ZIPKIN_ANNOTATIONS.fields()
+              : hasIpv6.get() ? ANNOTATION_FIELDS_WITHOUT_TRACE_ID_HIGH
+                  : ANNOTATION_FIELDS_WITHOUT_IPV6)
           .from(ZIPKIN_ANNOTATIONS)
-          .where(ZIPKIN_ANNOTATIONS.TRACE_ID.in(spansWithoutAnnotations.keySet()))
+          .where(shouldGroupBy128Bit
+              ? ANNOTATION_TRACE_ID_FIELDS.in(spansWithoutAnnotations.keySet())
+              : ZIPKIN_ANNOTATIONS.TRACE_ID.in(toTraceIds(spansWithoutAnnotations.keySet())))
           .orderBy(ZIPKIN_ANNOTATIONS.A_TIMESTAMP.asc(), ZIPKIN_ANNOTATIONS.A_KEY.asc())
           .stream()
-          .collect(groupingBy((Record a) -> Pair.create(
+          .collect(groupingBy((Record a) -> row(
+              shouldGroupBy128Bit ? a.getValue(ZIPKIN_ANNOTATIONS.TRACE_ID_HIGH) : 0L,
               a.getValue(ZIPKIN_ANNOTATIONS.TRACE_ID),
               a.getValue(ZIPKIN_ANNOTATIONS.SPAN_ID)
               ), LinkedHashMap::new,
@@ -207,7 +244,7 @@ final class MySQLSpanStore implements SpanStore {
       List<Span> trace = new ArrayList<>(spans.size());
       for (Span s : spans) {
         Span.Builder span = s.toBuilder();
-        Pair<?> key = Pair.create(s.traceId, s.id);
+        Row3<Long, Long, Long> key = row(shouldGroupBy128Bit ? s.traceIdHigh : 0L, s.traceId, s.id);
 
         if (dbAnnotations.containsKey(key)) {
           for (Record a : dbAnnotations.get(key)) {
@@ -237,20 +274,39 @@ final class MySQLSpanStore implements SpanStore {
     return result;
   }
 
+  static Field[] toTraceIds(Collection<Row2<Long, Long>> traceId128s) {
+    Field[] result = new Field[traceId128s.size()];
+    int i = 0;
+    for (Row2<Long, Long> traceId128 : traceId128s) {
+      result[i++] = traceId128.field2();
+    }
+    return result;
+  }
+
   @Override
   public List<List<Span>> getTraces(QueryRequest request) {
-    return getTraces(request, null, false);
+    return getTraces(request, null, null, false);
   }
 
   @Override
   public List<Span> getTrace(long traceId) {
-    List<List<Span>> result = getTraces(null, traceId, false);
+    List<List<Span>> result = getTraces(null, null, traceId, false);
+    return result.isEmpty() ? null : result.get(0);
+  }
+
+  @Override public List<Span> getTrace(long traceIdHigh, long traceId) {
+    List<List<Span>> result = getTraces(null, traceIdHigh, traceId, false);
     return result.isEmpty() ? null : result.get(0);
   }
 
   @Override
   public List<Span> getRawTrace(long traceId) {
-    List<List<Span>> result = getTraces(null, traceId, true);
+    List<List<Span>> result = getTraces(null, null, traceId, true);
+    return result.isEmpty() ? null : result.get(0);
+  }
+
+  @Override public List<Span> getRawTrace(long traceIdHigh, long traceId) {
+    List<List<Span>> result = getTraces(null, traceIdHigh, traceId, true);
     return result.isEmpty() ? null : result.get(0);
   }
 
@@ -344,7 +400,7 @@ final class MySQLSpanStore implements SpanStore {
   }
 
   static Field<?>[] fieldsExcept(Field<?>[] fields, TableField<Record, ?> exclude) {
-    ArrayList<Field<?>> list = new ArrayList(Arrays.asList(fields));
+    ArrayList<Field<?>> list = new ArrayList(asList(fields));
     list.remove(exclude);
     list.trimToSize();
     return list.toArray(new Field<?>[0]);

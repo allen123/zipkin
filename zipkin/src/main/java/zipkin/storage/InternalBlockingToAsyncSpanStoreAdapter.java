@@ -54,6 +54,19 @@ final class InternalBlockingToAsyncSpanStoreAdapter implements AsyncSpanStore {
     });
   }
 
+  @Override public void getTrace(final long traceIdHigh, final long traceId,
+      Callback<List<Span>> callback) {
+    executor.execute(new InternalCallbackRunnable<List<Span>>(callback) {
+      @Override List<Span> complete() {
+        return delegate.getTrace(traceIdHigh, traceId);
+      }
+
+      @Override public String toString() {
+        return "getTrace(" + traceIdHigh + "," + traceId + ")";
+      }
+    });
+  }
+
   @Override public void getRawTrace(final long traceId, Callback<List<Span>> callback) {
     executor.execute(new InternalCallbackRunnable<List<Span>>(callback) {
       @Override List<Span> complete() {
@@ -62,6 +75,19 @@ final class InternalBlockingToAsyncSpanStoreAdapter implements AsyncSpanStore {
 
       @Override public String toString() {
         return "getRawTrace(" + traceId + ")";
+      }
+    });
+  }
+
+  @Override
+  public void getRawTrace(final long traceIdHigh,final long traceId, Callback<List<Span>> callback) {
+    executor.execute(new InternalCallbackRunnable<List<Span>>(callback) {
+      @Override List<Span> complete() {
+        return delegate.getRawTrace(traceIdHigh, traceId);
+      }
+
+      @Override public String toString() {
+        return "getRawTrace(" + traceIdHigh + "," + traceId + ")";
       }
     });
   }

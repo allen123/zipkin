@@ -126,7 +126,7 @@ public class CassandraUtilTest {
           .traceIdHigh(Util.lowerHexToUnsignedLong(traceId, 0))
           .traceId(Util.lowerHexToUnsignedLong(traceId))
           .build();
-      BigInteger traceId = CassandraUtil.extractTraceId(span);
+      BigInteger traceId = CassandraUtil.bigInteger(span.traceIdHigh, span.traceId);
       Span copy = CassandraUtil.injectTraceId(span.toBuilder(), traceId).build();
       assertThat(copy).isEqualTo(span);
     }

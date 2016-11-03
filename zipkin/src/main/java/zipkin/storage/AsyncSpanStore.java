@@ -35,14 +35,24 @@ public interface AsyncSpanStore {
   void getTraces(QueryRequest request, Callback<List<List<Span>>> callback);
 
   /**
-   * Version of {@link SpanStore#getTrace} that accepts {@link Callback}.
+   * Version of {@link SpanStore#getTrace(long)} that accepts {@link Callback}.
    */
   void getTrace(long id, Callback<List<Span>> callback);
+
+  /**
+   * Version of {@link SpanStore#getTrace(long, long)} that accepts {@link Callback}.
+   */
+  void getTrace(long traceIdHigh, long traceId, Callback<List<Span>> callback);
 
   /**
    * Version of {@link SpanStore#getRawTrace} that accepts {@link Callback}.
    */
   void getRawTrace(long traceId, Callback<List<Span>> callback);
+
+  /**
+   * Version of {@link SpanStore#getRawTrace(long, long)} that accepts {@link Callback}.
+   */
+  void getRawTrace(long traceIdHigh, long traceId, Callback<List<Span>> callback);
 
   /**
    * Version of {@link SpanStore#getServiceNames} that accepts {@link Callback}.

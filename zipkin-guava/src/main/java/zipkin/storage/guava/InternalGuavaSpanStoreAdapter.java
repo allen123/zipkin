@@ -48,9 +48,21 @@ final class InternalGuavaSpanStoreAdapter implements GuavaSpanStore {
     return result;
   }
 
+  @Override public ListenableFuture<List<Span>> getTrace(long traceIdHigh, long traceId) {
+    CallbackListenableFuture<List<Span>> result = new CallbackListenableFuture<>();
+    delegate.getTrace(traceIdHigh, traceId, result);
+    return result;
+  }
+
   @Override public ListenableFuture<List<Span>> getRawTrace(long traceId) {
     CallbackListenableFuture<List<Span>> result = new CallbackListenableFuture<>();
     delegate.getRawTrace(traceId, result);
+    return result;
+  }
+
+  @Override public ListenableFuture<List<Span>> getRawTrace(long traceIdHigh, long traceId) {
+    CallbackListenableFuture<List<Span>> result = new CallbackListenableFuture<>();
+    delegate.getRawTrace(traceIdHigh, traceId, result);
     return result;
   }
 

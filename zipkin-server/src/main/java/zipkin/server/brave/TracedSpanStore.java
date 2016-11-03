@@ -55,11 +55,29 @@ final class TracedSpanStore implements SpanStore {
     }
   }
 
+  @Override public List<Span> getTrace(long traceIdHigh, long traceId) {
+    tracer.startNewSpan(component, "get-trace");
+    try {
+      return delegate.getTrace(traceIdHigh, traceId);
+    } finally {
+      tracer.finishSpan();
+    }
+  }
+
   @Override
   public List<Span> getRawTrace(long traceId) {
-    tracer.startNewSpan(component, "get-spans-by-trace-id");
+    tracer.startNewSpan(component, "get-raw-trace");
     try {
       return delegate.getRawTrace(traceId);
+    } finally {
+      tracer.finishSpan();
+    }
+  }
+
+  @Override public List<Span> getRawTrace(long traceIdHigh, long traceId) {
+    tracer.startNewSpan(component, "get-raw-trace");
+    try {
+      return delegate.getRawTrace(traceIdHigh, traceId);
     } finally {
       tracer.finishSpan();
     }
